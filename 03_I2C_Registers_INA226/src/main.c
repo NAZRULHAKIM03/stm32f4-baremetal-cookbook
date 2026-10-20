@@ -13,7 +13,7 @@ void I2C1_Init(void)
 {
     // 1. ENABLE THE CLOCK FOR GPIOB AND I2C1
     RCC->AHB1ENR |= (1 << 1);   // Enable GPIOB clock (Bit 1)
-    RCC->AHB1ENR |= (1 << 21);  // Enable I2C1 clock (Bit 21)
+    RCC->APB1ENR |= (1 << 21);  // Enable I2C1 clock (Bit 21)
 
     // 2. CONFIGURE PB8 (SCL) AND PB9 (SDA)
     // Clear mode bits for PB8 and PB9
@@ -76,7 +76,7 @@ uint16_t I2C_Read_Manufacturer_ID(uint8_t dev_addr)
 
     // Step 3: Send the internal register address we want to read (e.g., 0xFE for ID register)
     I2C1->DR = 0xFE;
-    while (!(I2C1->SR1 & (1 << 7))); // Wait until Data Register Empty (TxE)
+    while(!(I2C1->SR1 & (1 << 7))); // Wait until Data Register Empty (TxE)
 
     // Step 4: Repeated START condition for Reading
     I2C1->CR1 |= (1 << 8);              // Set START bit again
@@ -103,7 +103,7 @@ uint16_t I2C_Read_Manufacturer_ID(uint8_t dev_addr)
     uint8_t low_byte = I2C1->DR;
 
     id = (high_byte << 8) | low_byte;
-    return id;
+    return id; 
 }
 
 int main(void)
