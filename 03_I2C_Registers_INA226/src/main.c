@@ -19,7 +19,7 @@ void I2C1_Init(void)
     // Clear mode bits for PB8 and PB9
     GPIOB->MODER &= ~((3 << (8 * 2)) | (3 << (9 * 2)));
     // Set PB8 and PB9 to Alternate Function Mode (10)
-    GPIOB->MODER |= (2 << (8 *2) | (2 << (9 * 2)));
+    GPIOB->MODER |= (2 << (8 *2)) | (2 << (9 * 2));
 
     // Set pins to Open-Drain output type (Mandatory for I2C lines)
     GPIOB->OTYPER |= (1 << 8) | (1 << 9);
@@ -53,57 +53,73 @@ void I2C1_Init(void)
     I2C1->TRISE = 17;
     // TRISE is used to estimate how many clock cycles we need to wait before the voltage is gonna go up to 3.3V again, guarantees that every single bit transition happens on a clean, stable signal
 
-    // 4. ENABLE THE I2C1 PERIPHERAL
-    I2C1->CR1 |= (1 << 0);  // Set PE (Peripheral Enable) bit
+    // 4. ENABLE THE I2C1 PERIPHERAL, THEN ACK
+    I2C1->CR1 |= (1 << 0);  // Set PE first (ACK is forced to 0 while PE = 0)
+    I2C1->CR1 |= (1 << 10); // ACK enable (only sticks once PE = 1)
 }
 
 uint16_t I2C_Read_Manufacturer_ID(uint8_t dev_addr)
 {
     uint16_t id = 0;
+    volatile int tmp;   // Only used to read SR1/SR2 (volatile so compiler doesn't remove the reads)
 
     // Step 1: Send START condition
-    I2C1->CR1 |= (1 << 8);  // Set START bit (SB)
-    while (!(I2C1->SR1 & (1 << 0)));    // Wait unitl SB flag is set (SR1 stand for Status Register 1)
+    I2C1->CR1 |= (1 << 8);              // Set START bit
+    while(!(I2C1->SR1 & (1 << 0)));     // Wait until SB flag is set (Start condition generated)
 
     // Step 2: Send Slave Address with Write bit (Address << 1 | 0)
-    I2C1->DR = (dev_addr << 1);         // DR stand for Data register, we shift 1 because the last bit is to tell 0 = Write / 1 = Read
-    while (!(I2C1->SR1 & (1 << 1)));    // Wait for ADDR flag (Address sent successfully)
+    I2C1->DR = (dev_addr << 1);         // Last bit: 0 = Write / 1 = Read
+    while(!(I2C1->SR1 & (1 << 1)));     // Wait for ADDR flag (slave ACKed its address)
 
-    // Clear ADDR flag by reading SR1 then SR2 registers (ADDR flag is Hardward-cleared bits, it is READ-Only. need to perform specific sequence to clear)
-    volatile int tmp = I2C1->SR1;   // We use volatile because tmp is never used, so we need to avoid it from compiler optimization
+    // Clear ADDR flag: read SR1 then SR2 (hardware only clears it after this exact sequence)
+    tmp = I2C1->SR1;
     tmp = I2C1->SR2;
-    (void)tmp;  // Prevent compiler warnings --> Warning: Local variable 'tmp' set but never used.
+    (void)tmp;                          // Avoid compiler warning (unused variable)
 
-    // Step 3: Send the internal register address we want to read (e.g., 0xFE for ID register)
+    // Step 3: Send the internal register address we want to read (0xFE = Manufacturer ID)
     I2C1->DR = 0xFE;
-    while(!(I2C1->SR1 & (1 << 7))); // Wait until Data Register Empty (TxE)
+    // Wait for BTF (Byte Transfer Finished) so the byte is fully shifted out onto the bus before we issue the repeated START
+    while(!(I2C1->SR1 & (1 << 2)));     // BTF = Byte Transfer Finished
 
-    // Step 4: Repeated START condition for Reading
-    I2C1->CR1 |= (1 << 8);              // Set START bit again
+    // Step 4: Repeated START condition (switch from writing to reading)
+    I2C1->CR1 |= (1 << 8);
     while(!(I2C1->SR1 & (1 << 0)));     // Wait for SB flag
 
     // Step 5: Send Slave Address with Read bit (Address << 1 | 1)
-    I2C1->DR = (dev_addr << 1 | 1);
-    while (!(I2C1->SR1 & (1 << 1)));    // Wait for ADDR flag
+    I2C1->DR = (dev_addr << 1) | 1;
+    while(!(I2C1->SR1 & (1 << 1)));     // Wait for ADDR flag
 
-    // For 2-byte reads: send NACK on final byte & queue STOP condition before clearing ADDR
-    I2C1->CR1 &= ~(1 << 10);    // Clear ACK (tells hardware to NACK the final byte) -- NACK (No Acknowledge) to signal "i am done reading, please stop"
+    // Special sequence for receiving EXACTLY 2 bytes (the 1-byte recipe doesn't work here):
+    // POS = 1 makes the ACK bit control the NEXT byte (the one that will arrive in the shift register next),
+    // instead of the byte currently being received. without it, we had NACK the first byte
+    // and the slave would stop sending, which cause the low_byte never arrived
+    I2C1->CR1 |= (1 << 11);     // POS = 1
+    I2C1->CR1 |= (1 << 10);     // ACK = 1 (make sure ACK is on before the transfer starts)
 
-    tmp = I2C1->SR1;    // Read SR1 then SR2 to clear the ADDR flag
+    // Clear ADDR flag (Read SR1 then SR2). This must happen AFTER setting POS/ACK above because clearing ADDR
+    // is what lets the first byte start coming in
+    tmp = I2C1->SR1;
     tmp = I2C1->SR2;
-    (void)tmp;          // Suppress unused variable warning
+    (void)tmp;
 
-    I2C1->CR1 |= (1 << 9);  // Queue a STOP condition after the last byte arrives
+    // Now clear ACK so the 2nd (last) byte gets a NACK = "I am done reading, stop"
+    I2C1->CR1 &= ~(1 << 10);    // ACK = 0
 
-    // Step 6: Read high byte and low byte from Data Register (DR)
-    while(!(I2C1->SR1 & (1 << 6)));     // Wait for RxNE (Receiver Not Empty)
-    uint8_t high_byte = I2C1->DR;       // Reading DR does : copies the High Byte into local C variable and it clears the RxNE flag back to 0
+    // Step 6: Wait for BTF. At this moment, byte 1 is sitting in DR and byte 2 is already
+    // in the shift register, so both bytes have arrived and the clock is held (strecthed) because BTF = 1
+    while(!(I2C1->SR1 & (1 << 2)));
 
-    while(!(I2C1->SR1 & (1 << 6)));
-    uint8_t low_byte = I2C1->DR;
+    I2C1->CR1 |= (1 << 9);      // Queue STOP now, before reading DR (reading DR releases the clock)
 
-    id = (high_byte << 8) | low_byte;
-    return id; 
+    uint8_t high_byte = I2C1->DR;   // Read byte 1 (this also move byte 2 from shift register into DR)
+    uint8_t low_byte = I2C1->DR;    // Read byte 2
+
+    // Put things back to normal so the next call starts clean
+    I2C1->CR1 &= ~(1 << 11);        // POS = 0
+    I2C1->CR1 |= (1 << 10);         // ACK = 1
+
+    id = ((uint16_t)high_byte << 8) | low_byte;
+    return id;
 }
 
 int main(void)
@@ -115,8 +131,8 @@ int main(void)
     {
         // Query the INA226 sensor at address 0x40 to read its Manufacturer ID
         // A successful read will return 0x5449 ('TI' for Texas Instruments)
-        uint16_t sensor_id = I2C_Read_Manufacturer_ID(0x40);
-        (void)sensor_id;   // prevent compiler warning (unused variable)
+        volatile uint16_t sensor_id = I2C_Read_Manufacturer_ID(0x40);
+        (void)sensor_id;
 
         // Delay before polling again
         // Pause for roughly 375 milliseconds (0.375s) before polling the sensor again
