@@ -29,4 +29,4 @@ This repository is structured sequentially to document the transition from basic
   * *Implementation:* Utilizes an external multi-channel logic analyzer connected to the Mac to visually inspect clock phases, framing, and data timing for custom I2C and SPI driver code.
 * **[`06_SPI_Peripheral_Driver/`](./06_SPI_Peripheral_Driver)**
   * *Focus:* Complex peripheral initialization.
-  * *Implementation:* Integrates the bare-metal SPI engine with timed GPIO control lines to execute startup command sequences and refresh frame buffers on an ILI9341 TFT display.
+  * *Implementation:* Integrates the bare-metal SPI engine with timed GPIO control lines to execute startup command sequences and refresh frame buffers on an ILI9341 TFT display.hello
