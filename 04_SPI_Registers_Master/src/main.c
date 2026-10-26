@@ -84,6 +84,6 @@ int main(void)
         SPI1_Transmit(0xAA);
 
         // Delay before transmitting again
-        fn_delay(1000000);      // ~0.1875s
+        fn_delay(2000);      // ~0.375ms
     }
 }
